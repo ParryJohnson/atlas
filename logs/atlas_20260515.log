@@ -1,0 +1,35 @@
+2026-05-15 05:43:44,328 [atlas.main        ] INFO — ============================================================
+2026-05-15 05:43:44,328 [atlas.main        ] INFO — ATLAS SCAN CYCLE STARTED — 2026-05-15 05:43 UTC
+2026-05-15 05:43:44,328 [atlas.main        ] INFO — ============================================================
+2026-05-15 05:43:44,328 [atlas.execution   ] WARNING — [Execution] ALPACA_API_KEY not set — running in dry-run mode
+2026-05-15 05:43:44,329 [atlas.main        ] INFO — [1/5] Detecting market regime...
+2026-05-15 05:43:44,373 [atlas.macro       ] WARNING — [Macro] FRED_API_KEY not set — skipping FRED fetch
+2026-05-15 05:43:44,373 [atlas.macro       ] WARNING — [Macro] FRED_API_KEY not set — skipping FRED fetch
+2026-05-15 05:43:44,373 [atlas.main        ] ERROR — [1/5] Macro error: '>' not supported between instances of 'NoneType' and 'float'
+2026-05-15 05:43:44,373 [atlas.main        ] INFO — [2/5] Running price & technical scan...
+2026-05-15 05:43:44,373 [atlas.main        ] INFO —   Technical signals: 23 across 9 tickers
+2026-05-15 05:43:44,373 [atlas.main        ] INFO — [3/5] Scanning news & sentiment...
+2026-05-15 05:43:44,374 [atlas.main        ] INFO —   News scan complete (Finnhub/NewsAPI requires API keys)
+2026-05-15 05:43:44,374 [atlas.main        ] INFO — [4/5] Scanning alternative data...
+2026-05-15 05:43:44,681 [atlas.alt         ] WARNING — [Alt] StockTwits AAPL: HTTP 403
+2026-05-15 05:43:45,114 [atlas.alt         ] WARNING — [Alt] StockTwits MSFT: HTTP 403
+2026-05-15 05:43:45,539 [atlas.alt         ] WARNING — [Alt] StockTwits NVDA: HTTP 403
+2026-05-15 05:43:45,963 [atlas.alt         ] WARNING — [Alt] StockTwits GOOGL: HTTP 403
+2026-05-15 05:43:46,382 [atlas.alt         ] WARNING — [Alt] StockTwits META: HTTP 403
+2026-05-15 05:43:46,757 [atlas.main        ] INFO — [5/5] Running confluence scoring...
+2026-05-15 05:43:46,780 [atlas.scorer      ] INFO — [Scorer] Scored 9 tickers: 0 FIRE, 2 WATCH — regime=NEUTRAL
+2026-05-15 05:43:46,780 [atlas.main        ] INFO — 
+────────────────────────────────────────
+2026-05-15 05:43:46,780 [atlas.main        ] INFO — Processing 0 FIRE signal(s)...
+2026-05-15 05:43:46,780 [atlas.main        ] INFO — 
+============================================================
+2026-05-15 05:43:46,780 [atlas.main        ] INFO — SCAN COMPLETE in 2.5s
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   Tickers scanned:  9
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   FIRE signals:     0
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   Trades approved:  0
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   Trades executed:  0
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   Errors:           1
+2026-05-15 05:43:46,780 [atlas.main        ] INFO —   Regime:           NEUTRAL
+2026-05-15 05:43:46,780 [atlas.main        ] INFO — ============================================================
+
+2026-05-15 05:43:46,780 [atlas.execution   ] WARNING — [Execution] ALPACA_API_KEY not set — running in dry-run mode
