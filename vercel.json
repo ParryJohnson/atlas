@@ -1,0 +1,18 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "api/scan.py": { "maxDuration": 300 },
+    "api/status.py": { "maxDuration": 30 },
+    "api/portfolio.py": { "maxDuration": 15 },
+    "api/signals.py": { "maxDuration": 15 },
+    "api/trades.py": { "maxDuration": 15 },
+    "api/regime.py": { "maxDuration": 15 }
+  },
+  "crons": [
+    { "path": "/api/scan", "schedule": "0 12 * * 1-5" },
+    { "path": "/api/scan", "schedule": "45 13 * * 1-5" },
+    { "path": "/api/scan", "schedule": "0 16 * * 1-5" },
+    { "path": "/api/scan", "schedule": "30 19 * * 1-5" },
+    { "path": "/api/scan", "schedule": "30 20 * * 1-5" }
+  ]
+}

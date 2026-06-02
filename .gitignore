@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Database & logs (local only)
+data/atlas.db
+data/*.db
+logs/
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
+
+# Next.js
+.next/
+out/
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

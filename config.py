@@ -37,7 +37,11 @@ DISCORD_WEBHOOK_URL   = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # ── DATABASE ───────────────────────────────────────────────────────────────────
 DB_PATH = BASE_DIR / "data" / "atlas.db"
-DB_URL  = f"sqlite:///{DB_PATH}"
+_default_db = f"sqlite:///{DB_PATH}"
+DB_URL  = os.getenv("DATABASE_URL", _default_db)
+# Neon/Heroku provide postgres:// but SQLAlchemy needs postgresql://
+if DB_URL.startswith("postgres://"):
+    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
 
 # ── UNIVERSE — tickers ATLAS watches ──────────────────────────────────────────
 # Start focused. Add more as the system proves itself.

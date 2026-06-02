@@ -10,6 +10,7 @@ praw>=7.7.1
 pytrends>=4.9.2
 APScheduler>=3.10.4
 SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
 # Optional: for local FinBERT NLP (Phase 5)
 # transformers>=4.40.0
 # torch>=2.3.0

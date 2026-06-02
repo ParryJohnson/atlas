@@ -220,19 +220,27 @@ class SignalPerformance(Base):
     last_updated    = Column(DateTime, default=datetime.utcnow)
 
 
+def _make_engine(url=None):
+    from sqlalchemy.pool import NullPool
+    target = url or DB_URL
+    if target.startswith("sqlite"):
+        return create_engine(target, echo=False)
+    return create_engine(target, echo=False, poolclass=NullPool)
+
+
 def init_db():
     """Initialize the database and create all tables."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(DB_URL, echo=False)
+    if DB_URL.startswith("sqlite"):
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    engine = _make_engine()
     Base.metadata.create_all(engine)
-    print(f"[DB] Initialized at {DB_PATH}")
     return engine
 
 
 def get_session(engine=None):
     """Get a database session."""
     if engine is None:
-        engine = create_engine(DB_URL, echo=False)
+        engine = _make_engine()
     Session = sessionmaker(bind=engine)
     return Session()
 
