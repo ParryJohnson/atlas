@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import (
     RISK_PER_TRADE_PCT, MAX_POSITION_SIZE_PCT, MAX_PORTFOLIO_POSITIONS,
     MAX_SECTOR_EXPOSURE_PCT, MAX_MONTHLY_DRAWDOWN,
-    TRAILING_STOP_TRIGGER, TRAILING_STOP_DISTANCE
+    TRAILING_STOP_TRIGGER, TRAILING_STOP_DISTANCE,
+    STOP_ATR_MULTIPLIERS,
 )
 from core.database import get_session, Position, Trade, PortfolioSnapshot
 
@@ -109,24 +110,30 @@ def calculate_position_size(
 
 def calculate_stop_loss(entry_price: float, atr: float,
                          direction: str = "long",
-                         atr_multiplier: float = 2.0) -> dict:
+                         trade_type: str = "swing",
+                         atr_multiplier: float = None) -> dict:
     """
     Calculate ATR-based stop loss and initial take profit.
 
-    Stop = entry - (ATR * multiplier) for longs
-    Take profit = entry + (ATR * multiplier * 2) for 2:1 R/R
+    ATR multiplier scales by trade type:
+      intraday → 1.0x ATR (tight — you're in and out fast)
+      swing    → 2.0x ATR (standard)
+      position → 3.0x ATR (wide — needs room to breathe)
+
+    Risk/reward is always 2.5:1.
     """
     if atr is None or atr <= 0:
-        atr = entry_price * 0.02   # Default: 2% of price
+        atr = entry_price * 0.02
 
-    stop_distance = atr * atr_multiplier
+    multiplier    = atr_multiplier or STOP_ATR_MULTIPLIERS.get(trade_type, 2.0)
+    stop_distance = atr * multiplier
 
     if direction == "long":
-        stop_loss    = entry_price - stop_distance
-        take_profit  = entry_price + (stop_distance * 2.5)  # 2.5:1 R/R
+        stop_loss   = entry_price - stop_distance
+        take_profit = entry_price + (stop_distance * 2.5)
     else:
-        stop_loss    = entry_price + stop_distance
-        take_profit  = entry_price - (stop_distance * 2.5)
+        stop_loss   = entry_price + stop_distance
+        take_profit = entry_price - (stop_distance * 2.5)
 
     return {
         "entry":        round(entry_price, 2),
@@ -134,6 +141,8 @@ def calculate_stop_loss(entry_price: float, atr: float,
         "take_profit":  round(take_profit, 2),
         "stop_distance": round(stop_distance, 2),
         "atr_used":     round(atr, 2),
+        "atr_multiplier": multiplier,
+        "trade_type":   trade_type,
         "risk_reward":  2.5,
     }
 
@@ -280,6 +289,7 @@ def full_risk_check(
     conviction_score: float,
     earnings_dates: dict = None,
     session = None,
+    **kwargs,
 ) -> dict:
     """
     Run ALL risk checks. Returns full risk assessment with position sizing.
@@ -304,8 +314,10 @@ def full_risk_check(
         if not eb:
             all_passed = False
 
+    trade_type = kwargs.get("trade_type", "swing")
+
     # 3. Stop loss calculation
-    stops = calculate_stop_loss(entry_price, atr, direction)
+    stops = calculate_stop_loss(entry_price, atr, direction, trade_type)
     results["stops"] = stops
 
     # 4. Position sizing

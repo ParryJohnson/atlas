@@ -20,11 +20,66 @@ import sys, os, logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import (
     SIGNAL_WEIGHTS, REGIME_MULTIPLIERS,
-    SIGNAL_FIRE_THRESHOLD, SIGNAL_WATCH_THRESHOLD
+    SIGNAL_FIRE_THRESHOLD, SIGNAL_WATCH_THRESHOLD,
+    TIMEFRAME_AGREEMENT_BONUS,
 )
 from core.database import get_session, Signal, ConvictionScore
 
 logger = logging.getLogger("atlas.scorer")
+
+
+def _timeframe_agreement_bonus(signals: list[dict]) -> float:
+    """
+    Compute a multiplier based on how many timeframes agree on direction.
+    Signals without a 'timeframe' key are treated as daily (position).
+    """
+    tf_votes: dict[str, dict] = {}
+    for sig in signals:
+        tf = sig.get("timeframe", "daily")
+        if tf == "premarket":
+            tf = "daily"
+        tf_votes.setdefault(tf, {"bullish": 0, "bearish": 0})
+        d = sig.get("direction", "")
+        if d in ("bullish", "bearish"):
+            tf_votes[tf][d] += 1
+
+    if len(tf_votes) < 2:
+        return TIMEFRAME_AGREEMENT_BONUS["none"]
+
+    verdicts = []
+    for counts in tf_votes.values():
+        if counts["bullish"] > counts["bearish"]:
+            verdicts.append("bullish")
+        elif counts["bearish"] > counts["bullish"]:
+            verdicts.append("bearish")
+
+    if not verdicts:
+        return TIMEFRAME_AGREEMENT_BONUS["none"]
+
+    bull_n = verdicts.count("bullish")
+    bear_n = verdicts.count("bearish")
+    total  = len(verdicts)
+
+    if bull_n == total or bear_n == total:
+        return TIMEFRAME_AGREEMENT_BONUS["strong"] if total >= 3 else TIMEFRAME_AGREEMENT_BONUS["moderate"]
+    if bull_n >= total * 0.67 or bear_n >= total * 0.67:
+        return TIMEFRAME_AGREEMENT_BONUS["moderate"]
+    return TIMEFRAME_AGREEMENT_BONUS["conflict"]
+
+
+def _classify_trade_type(signals: list[dict]) -> str:
+    """
+    Infer expected hold time from which timeframes are contributing.
+    Intraday signals dominate → short hold; daily signals → position.
+    """
+    type_counts: dict[str, int] = {}
+    for sig in signals:
+        tt = sig.get("trade_type", "swing")
+        type_counts[tt] = type_counts.get(tt, 0) + 1
+
+    if not type_counts:
+        return "swing"
+    return max(type_counts, key=type_counts.get)
 
 
 def compute_conviction_score(
@@ -32,6 +87,7 @@ def compute_conviction_score(
     signals: list[dict],
     regime: str = "neutral",
     regime_multiplier: float = 1.0,
+    live_weights: dict = None,
 ) -> dict:
     """
     Aggregate a list of signals into a conviction score.
@@ -48,6 +104,7 @@ def compute_conviction_score(
     if not signals:
         return _empty_conviction(ticker)
 
+    weights         = live_weights or SIGNAL_WEIGHTS
     raw_score       = 0.0
     contributing    = []
     bullish_signals = []
@@ -61,8 +118,10 @@ def compute_conviction_score(
         raw_value   = sig.get("value", 0.0)
         timestamp   = sig.get("timestamp", now)
 
-        # Get base weight from config (or use the score already computed by connector)
-        base_weight = sig.get("score", SIGNAL_WEIGHTS.get(signal_type, 0.05))
+        # Use learning-adjusted weight if available, else connector score, else config default
+        base_weight = sig.get("score", weights.get(signal_type, 0.05))
+        if signal_type in weights:
+            base_weight = weights[signal_type]
 
         # Recency decay: signals older than 6h get reduced weight
         if isinstance(timestamp, datetime):
@@ -107,7 +166,7 @@ def compute_conviction_score(
         elif direction == "bearish":
             bearish_signals.append(signal_type)
 
-    # Contradiction penalty: if we have both bull and bear signals, reduce confidence
+    # Contradiction penalty
     bull_count = len(bullish_signals)
     bear_count = len(bearish_signals)
     if bull_count > 0 and bear_count > 0:
@@ -117,38 +176,43 @@ def compute_conviction_score(
         logger.debug(f"[Scorer] {ticker}: contradiction penalty {penalty:.3f} "
                     f"(bull={bull_count}, bear={bear_count})")
 
+    # Multi-timeframe agreement bonus
+    tf_bonus = _timeframe_agreement_bonus(signals)
+    raw_score *= tf_bonus
+    if tf_bonus != 1.0:
+        logger.debug(f"[Scorer] {ticker}: timeframe bonus {tf_bonus:.2f}x")
+
     # Clamp to [-1, +1]
     final_score = max(-1.0, min(1.0, raw_score))
 
-    # Determine direction and action
-    direction = "long"  if final_score > 0 else "short"
-    abs_score = abs(final_score)
+    direction  = "long" if final_score > 0 else "short"
+    abs_score  = abs(final_score)
+    trade_type = _classify_trade_type(signals)
 
     if abs_score >= SIGNAL_FIRE_THRESHOLD:
-        action = "FIRE"
-        confidence = "high"
+        action, confidence = "FIRE", "high"
     elif abs_score >= SIGNAL_WATCH_THRESHOLD:
-        action = "WATCH"
-        confidence = "medium"
+        action, confidence = "WATCH", "medium"
     else:
-        action = "IGNORE"
-        confidence = "low"
+        action, confidence = "IGNORE", "low"
 
     return {
-        "ticker":           ticker,
-        "score":            round(final_score, 4),
-        "abs_score":        round(abs_score, 4),
-        "direction":        direction,
-        "action":           action,
-        "confidence":       confidence,
-        "regime":           regime,
-        "regime_multiplier": regime_multiplier,
-        "signal_count":     len(signals),
-        "bullish_signals":  bullish_signals,
-        "bearish_signals":  bearish_signals,
-        "contributing":     contributing,
-        "timestamp":        now.isoformat(),
-        "above_threshold":  abs_score >= SIGNAL_FIRE_THRESHOLD,
+        "ticker":             ticker,
+        "score":              round(final_score, 4),
+        "abs_score":          round(abs_score, 4),
+        "direction":          direction,
+        "action":             action,
+        "confidence":         confidence,
+        "trade_type":         trade_type,
+        "timeframe_bonus":    round(tf_bonus, 3),
+        "regime":             regime,
+        "regime_multiplier":  regime_multiplier,
+        "signal_count":       len(signals),
+        "bullish_signals":    bullish_signals,
+        "bearish_signals":    bearish_signals,
+        "contributing":       contributing,
+        "timestamp":          now.isoformat(),
+        "above_threshold":    abs_score >= SIGNAL_FIRE_THRESHOLD,
     }
 
 
@@ -162,7 +226,7 @@ def _empty_conviction(ticker: str) -> dict:
     }
 
 
-def score_all_tickers(all_signals: dict, regime_data: dict) -> list[dict]:
+def score_all_tickers(all_signals: dict, regime_data: dict, session=None) -> list[dict]:
     """
     Score every ticker in the universe.
     all_signals: {ticker: [signal, ...]} from combined connector output
@@ -170,13 +234,24 @@ def score_all_tickers(all_signals: dict, regime_data: dict) -> list[dict]:
 
     Returns list of conviction dicts, sorted by abs(score) desc.
     """
-    regime        = regime_data.get("regime", "neutral")
-    multiplier    = regime_data.get("multiplier", 1.0)
-    session       = get_session()
-    scored        = []
+    regime     = regime_data.get("regime", "neutral")
+    multiplier = regime_data.get("multiplier", 1.0)
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    scored = []
+
+    # Pull learning-adjusted weights once for the whole scan
+    try:
+        from learning.performance_tracker import get_live_weights
+        live_weights = get_live_weights(session)
+    except Exception:
+        live_weights = None
 
     for ticker, signals in all_signals.items():
-        conviction = compute_conviction_score(ticker, signals, regime, multiplier)
+        conviction = compute_conviction_score(
+            ticker, signals, regime, multiplier, live_weights=live_weights
+        )
         scored.append(conviction)
 
         # Persist to DB
@@ -206,7 +281,8 @@ def score_all_tickers(all_signals: dict, regime_data: dict) -> list[dict]:
             session.add(signal_record)
 
     session.commit()
-    session.close()
+    if own_session:
+        session.close()
 
     # Sort: FIRE first, then WATCH, then by score magnitude
     priority = {"FIRE": 0, "WATCH": 1, "IGNORE": 2}

@@ -36,10 +36,14 @@ from config import (
 from core.database import init_db, get_session, PortfolioSnapshot
 from connectors.macro_connector import get_fear_greed_index, get_yield_curve, classify_regime
 from connectors.news_connector import run_news_scan
-from connectors.alt_connector import fetch_stocktwits_sentiment, get_alt_signals
-from signals.scorer import score_all_tickers, format_conviction_report, compute_conviction_score
+from connectors.alt_connector import get_alt_signals
+from connectors.price_connector import run_price_scan, get_vix_level
+from connectors.realtime_connector import run_realtime_scan
+from connectors.options_connector import run_options_scan
+from signals.scorer import score_all_tickers, format_conviction_report
 from risk.risk_engine import full_risk_check
 from execution.executor import AlpacaClient, execute_trade, sync_positions
+from learning.performance_tracker import check_and_close_trades
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -84,15 +88,26 @@ def run_full_scan(dry_run: bool = True) -> dict:
         "errors":      [],
     }
 
-    # ── Step 1: Macro regime ───────────────────────────────────────────────────
-    logger.info("[1/5] Detecting market regime...")
+    # ── Step 0: Check for closed positions → learning loop ────────────────────
     try:
+        closed = check_and_close_trades(session, client)
+        if closed:
+            logger.info(f"[0/6] Learning loop: {len(closed)} position(s) closed → weights updated")
+    except Exception as e:
+        logger.warning(f"[0/6] Learning loop error: {e}")
+
+    # ── Step 1: Macro regime ───────────────────────────────────────────────────
+    logger.info("[1/6] Detecting market regime...")
+    try:
+        vix        = get_vix_level()
         fear_greed = get_fear_greed_index()
         yield_data = get_yield_curve()
 
-        # We'd get VIX and SPY_vs_200MA from price connector — use defaults in demo
-        vix          = 18.5
-        spy_vs_200ma = 3.2
+        import yfinance as yf
+        spy_hist     = yf.Ticker("SPY").history(period="1y")
+        spy_close    = float(spy_hist["Close"].iloc[-1])
+        spy_200ma    = float(spy_hist["Close"].rolling(200).mean().iloc[-1])
+        spy_vs_200ma = (spy_close - spy_200ma) / spy_200ma * 100
 
         regime_data = classify_regime(
             vix=vix,
@@ -101,51 +116,79 @@ def run_full_scan(dry_run: bool = True) -> dict:
             fear_greed=fear_greed.get("score", 50),
         )
         results["regime"] = regime_data
-        logger.info(f"  {regime_data['description']}")
-        logger.info(f"  Fear & Greed: {fear_greed['description']}")
-        logger.info(f"  {yield_data['description']}")
+        logger.info(f"  Regime: {regime_data['regime'].upper()} | VIX={vix:.1f} | "
+                    f"SPY vs 200MA={spy_vs_200ma:+.1f}% | F&G={fear_greed.get('score', '?')}")
     except Exception as e:
-        logger.error(f"[1/5] Macro error: {e}")
+        logger.error(f"[1/6] Macro error: {e}")
         regime_data = {"regime": "neutral", "multiplier": 1.0}
         results["errors"].append(f"macro: {e}")
 
-    # ── Step 2: Price + technical signals ─────────────────────────────────────
-    logger.info("[2/5] Running price & technical scan...")
-    all_signals = {}
+    # ── Step 2: Daily price + technicals ──────────────────────────────────────
+    logger.info("[2/6] Running daily price & technical scan...")
+    all_signals: dict = {}
     tickers = [t for t in WATCHLIST if not t.startswith("^")]
-
-    # In production: call run_price_scan(tickers)
-    # For demo/testing, use synthetic signals
-    demo_signals = _generate_demo_signals(tickers, regime_data["regime"])
-    all_signals.update(demo_signals)
-    logger.info(f"  Technical signals: {sum(len(v) for v in all_signals.values())} across {len(all_signals)} tickers")
-
-    # ── Step 3: News & sentiment ───────────────────────────────────────────────
-    logger.info("[3/5] Scanning news & sentiment...")
     try:
-        # In production: news_results = run_news_scan(tickers[:10])
-        # Add news signals to existing technical signals
-        logger.info("  News scan complete (Finnhub/NewsAPI requires API keys)")
+        daily_signals = run_price_scan(tickers)
+        for ticker, sigs in daily_signals.items():
+            all_signals.setdefault(ticker, []).extend(sigs)
+        logger.info(f"  Daily signals: {sum(len(v) for v in daily_signals.values())} across {len(daily_signals)} tickers")
     except Exception as e:
-        logger.error(f"[3/5] News error: {e}")
+        logger.error(f"[2/6] Price scan error: {e}")
+        results["errors"].append(f"price: {e}")
+
+    # ── Step 3: Intraday + real-time signals ───────────────────────────────────
+    logger.info("[3/6] Running intraday & real-time scan...")
+    try:
+        for ticker in tickers:
+            rt_sigs = run_realtime_scan(ticker, timeframes=["15m", "1h"])
+            if rt_sigs:
+                all_signals.setdefault(ticker, []).extend(rt_sigs)
+            time.sleep(0.1)
+        rt_total = sum(len(v) for v in all_signals.values()) - sum(
+            len(daily_signals.get(t, [])) for t in tickers
+        )
+        logger.info(f"  Intraday signals added: {rt_total}")
+    except Exception as e:
+        logger.error(f"[3/6] Realtime scan error: {e}")
+        results["errors"].append(f"realtime: {e}")
+
+    # ── Step 4: News, sentiment, alternative data ─────────────────────────────
+    logger.info("[4/6] Scanning news, sentiment & alternative data...")
+    try:
+        news_sigs = run_news_scan(tickers[:12])
+        for ticker, sigs in news_sigs.items():
+            all_signals.setdefault(ticker, []).extend(sigs)
+        logger.info(f"  News signals: {sum(len(v) for v in news_sigs.values())}")
+    except Exception as e:
+        logger.warning(f"[4/6] News error: {e}")
         results["errors"].append(f"news: {e}")
 
-    # ── Step 4: Alternative data ───────────────────────────────────────────────
-    logger.info("[4/5] Scanning alternative data...")
     try:
-        for ticker in tickers[:5]:
+        for ticker in tickers[:8]:
             alt_sigs = get_alt_signals(ticker)
             if alt_sigs:
                 all_signals.setdefault(ticker, []).extend(alt_sigs)
-                logger.info(f"  Alt signals for {ticker}: {len(alt_sigs)}")
-            time.sleep(0.3)
+            time.sleep(0.2)
     except Exception as e:
-        logger.error(f"[4/5] Alt data error: {e}")
+        logger.warning(f"[4/6] Alt data error: {e}")
         results["errors"].append(f"alt_data: {e}")
 
-    # ── Step 5: Score all tickers ─────────────────────────────────────────────
-    logger.info("[5/5] Running confluence scoring...")
-    scored = score_all_tickers(all_signals, regime_data)
+    # ── Step 5: Options flow ───────────────────────────────────────────────────
+    logger.info("[5/6] Scanning options flow...")
+    try:
+        options_sigs = run_options_scan(tickers)
+        for ticker, sigs in options_sigs.items():
+            if sigs:
+                all_signals.setdefault(ticker, []).extend(sigs)
+        opt_total = sum(len(v) for v in options_sigs.values())
+        logger.info(f"  Options signals: {opt_total}")
+    except Exception as e:
+        logger.warning(f"[5/6] Options error: {e}")
+        results["errors"].append(f"options: {e}")
+
+    # ── Step 6: Score all tickers ─────────────────────────────────────────────
+    logger.info("[6/6] Running confluence scoring...")
+    scored = score_all_tickers(all_signals, regime_data, session=session)
     results["scores"] = scored
 
     # Print the report
@@ -163,11 +206,20 @@ def run_full_scan(dry_run: bool = True) -> dict:
         logger.info(f"\n  Evaluating {ticker} [{conviction['direction'].upper()}] "
                    f"score={conviction['score']:+.4f}")
 
-        # Get ATR for this ticker (would come from price connector in production)
-        atr = 8.5  # placeholder — populated by price_connector in live run
+        # Get real-time ATR and entry price
+        try:
+            from connectors.realtime_connector import get_intraday_bars, compute_intraday_technicals
+            atr_df = get_intraday_bars(ticker, "15m")
+            if not atr_df.empty:
+                atr_df = compute_intraday_technicals(atr_df)
+                atr = float(atr_df["atr"].dropna().iloc[-1]) if "atr" in atr_df else 0
+                entry_price = float(atr_df["close"].iloc[-1])
+            else:
+                atr, entry_price = 0, _get_mock_price(ticker)
+        except Exception:
+            atr, entry_price = 0, _get_mock_price(ticker)
 
-        # Get a realistic entry price (placeholder)
-        entry_price = _get_mock_price(ticker)
+        trade_type = conviction.get("trade_type", "swing")
 
         risk = full_risk_check(
             ticker=ticker,
@@ -177,6 +229,7 @@ def run_full_scan(dry_run: bool = True) -> dict:
             portfolio_value=portfolio_value,
             conviction_score=abs(conviction["score"]),
             session=session,
+            trade_type=trade_type,
         )
         logger.info(f"  Risk check: {risk['summary']}")
 
@@ -200,6 +253,7 @@ def run_full_scan(dry_run: bool = True) -> dict:
     logger.info(f"\n{'='*60}")
     logger.info(f"SCAN COMPLETE in {elapsed:.1f}s")
     logger.info(f"  Tickers scanned:  {len(scored)}")
+    logger.info(f"  Total signals:    {sum(len(v) for v in all_signals.values())}")
     logger.info(f"  FIRE signals:     {len(fires)}")
     logger.info(f"  Trades approved:  {sum(1 for f in results['fired'] if f['approved'])}")
     logger.info(f"  Trades executed:  {len(results['executed'])}")
