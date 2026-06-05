@@ -1,9 +1,20 @@
-import sys, os, json, time
+import sys, os, json, time, math
 from http.server import BaseHTTPRequestHandler
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+
+def _clean(obj):
+    """Recursively replace NaN/Inf with None so json.dumps never chokes."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean(v) for v in obj]
+    return obj
 
 
 def _run_scan():
@@ -41,9 +52,9 @@ def _run_scan():
         fear_greed = get_fear_greed_index()
         yield_data = get_yield_curve()
 
-        spy_hist     = yf.Ticker("SPY").history(period="1y")
+        spy_hist     = yf.Ticker("SPY").history(period="2y")
         spy_close    = float(spy_hist["Close"].iloc[-1])
-        spy_200ma    = float(spy_hist["Close"].rolling(200).mean().iloc[-1])
+        spy_200ma    = float(spy_hist["Close"].rolling(200).mean().dropna().iloc[-1])
         spy_vs_200ma = (spy_close - spy_200ma) / spy_200ma * 100
 
         regime_data = classify_regime(
@@ -193,7 +204,7 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             result = _run_scan()
-            self._respond(200, result)
+            self._respond(200, _clean(result))
         except Exception as e:
             self._respond(500, {"success": False, "error": str(e)})
 
