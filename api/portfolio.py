@@ -1,8 +1,17 @@
-import sys, os, json
+import sys, os, json, math
 from http.server import BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+def _clean(obj):
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean(v) for v in obj]
+    return obj
 
 
 def _get_data():
@@ -45,7 +54,7 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _respond(self, code, data):
-        body = json.dumps(data, default=str).encode()
+        body = json.dumps(_clean(data), default=str).encode()
         self.send_response(code)
         self._cors()
         self.send_header("Content-Type", "application/json")
