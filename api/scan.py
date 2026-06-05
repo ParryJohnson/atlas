@@ -99,9 +99,24 @@ def _run_scan():
 
     # ── Step 4: News + alternative data ───────────────────────────────────────
     try:
-        news_sigs = run_news_scan(tickers[:12])
-        for ticker, sigs in news_sigs.items():
-            all_signals.setdefault(ticker, []).extend(sigs)
+        news_data = run_news_scan(tickers[:12])
+        for ticker, sentiment in news_data.items():
+            sig = sentiment.get("signal", "neutral")
+            avg = sentiment.get("avg_sentiment", 0.0)
+            if sig in ("strong_bullish", "mild_bullish") and avg > 0.1:
+                all_signals.setdefault(ticker, []).append({
+                    "signal_type": "news_sentiment_bullish",
+                    "value": avg, "score": min(abs(avg) * 0.10, 0.10),
+                    "direction": "bullish", "source": "news",
+                    "timestamp": datetime.utcnow(),
+                })
+            elif sig in ("strong_bearish", "mild_bearish") and avg < -0.1:
+                all_signals.setdefault(ticker, []).append({
+                    "signal_type": "news_sentiment_bearish",
+                    "value": avg, "score": min(abs(avg) * 0.10, 0.10),
+                    "direction": "bearish", "source": "news",
+                    "timestamp": datetime.utcnow(),
+                })
     except Exception as e:
         errors.append(f"news: {e}")
 

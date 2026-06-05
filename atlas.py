@@ -155,10 +155,28 @@ def run_full_scan(dry_run: bool = True) -> dict:
     # ── Step 4: News, sentiment, alternative data ─────────────────────────────
     logger.info("[4/6] Scanning news, sentiment & alternative data...")
     try:
-        news_sigs = run_news_scan(tickers[:12])
-        for ticker, sigs in news_sigs.items():
-            all_signals.setdefault(ticker, []).extend(sigs)
-        logger.info(f"  News signals: {sum(len(v) for v in news_sigs.values())}")
+        news_data = run_news_scan(tickers[:12])
+        news_count = 0
+        for ticker, sentiment in news_data.items():
+            sig = sentiment.get("signal", "neutral")
+            avg = sentiment.get("avg_sentiment", 0.0)
+            if sig in ("strong_bullish", "mild_bullish") and avg > 0.1:
+                all_signals.setdefault(ticker, []).append({
+                    "signal_type": "news_sentiment_bullish",
+                    "value": avg, "score": min(abs(avg) * 0.10, 0.10),
+                    "direction": "bullish", "source": "news",
+                    "timestamp": datetime.utcnow(),
+                })
+                news_count += 1
+            elif sig in ("strong_bearish", "mild_bearish") and avg < -0.1:
+                all_signals.setdefault(ticker, []).append({
+                    "signal_type": "news_sentiment_bearish",
+                    "value": avg, "score": min(abs(avg) * 0.10, 0.10),
+                    "direction": "bearish", "source": "news",
+                    "timestamp": datetime.utcnow(),
+                })
+                news_count += 1
+        logger.info(f"  News signals: {news_count}")
     except Exception as e:
         logger.warning(f"[4/6] News error: {e}")
         results["errors"].append(f"news: {e}")
