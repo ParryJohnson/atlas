@@ -143,6 +143,18 @@ def get_live_weights(session) -> dict:
     return weights
 
 
+def _get_exit_price(ticker: str, fallback: float) -> float:
+    """Fetch last close price from yfinance for accurate P&L on close."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return fallback
+
+
 def check_and_close_trades(session, alpaca_client=None) -> list:
     """
     Detect positions that Alpaca closed (stop hit or take profit).
@@ -158,16 +170,34 @@ def check_and_close_trades(session, alpaca_client=None) -> list:
             return []
 
         alpaca_tickers: set = set()
+        pending_tickers: set = set()
+
         if alpaca_client:
             try:
                 for p in alpaca_client.get_positions():
-                    alpaca_tickers.add(p.get("symbol") or p.symbol)
+                    sym = p.get("symbol") if isinstance(p, dict) else None
+                    if sym:
+                        alpaca_tickers.add(sym)
+            except Exception:
+                pass
+            try:
+                for o in alpaca_client.get_orders(status="open"):
+                    sym = o.get("symbol") if isinstance(o, dict) else None
+                    if sym:
+                        pending_tickers.add(sym)
             except Exception:
                 pass
 
         for pos in db_positions:
             if pos.ticker in alpaca_tickers:
-                continue  # still open
+                continue  # still open in Alpaca
+
+            if pos.ticker in pending_tickers:
+                continue  # order pending — not filled yet
+
+            # Don't close positions opened in the last 10 minutes (race condition)
+            if pos.entry_time and (datetime.utcnow() - pos.entry_time).total_seconds() < 600:
+                continue
 
             # Position gone from Alpaca → it was closed
             trade = (
@@ -177,13 +207,24 @@ def check_and_close_trades(session, alpaca_client=None) -> list:
                 .first()
             )
             if trade:
-                exit_px = pos.current_price or pos.entry_price
-                trade.exit_time  = datetime.utcnow()
-                trade.exit_price = exit_px
-                direction_mult   = 1 if (trade.direction or "long") == "long" else -1
-                trade.pnl        = round((exit_px - trade.entry_price) * (trade.shares or 1) * direction_mult, 2)
-                trade.pnl_pct    = round((exit_px - trade.entry_price) / trade.entry_price * 100 * direction_mult, 4)
-                trade.exit_reason = "closed_by_alpaca"
+                # Get best available exit price
+                exit_px = _get_exit_price(pos.ticker, pos.current_price or pos.entry_price)
+
+                # Determine exit reason from price levels
+                exit_reason = "closed_by_alpaca"
+                sl = trade.stop_loss_price or pos.stop_loss_price
+                tp = trade.take_profit_price
+                if sl and exit_px <= sl * 1.02:
+                    exit_reason = "stop_loss"
+                elif tp and exit_px >= tp * 0.98:
+                    exit_reason = "take_profit"
+
+                trade.exit_time   = datetime.utcnow()
+                trade.exit_price  = exit_px
+                direction_mult    = 1 if (trade.direction or "long") == "long" else -1
+                trade.pnl         = round((exit_px - trade.entry_price) * (trade.shares or 1) * direction_mult, 2)
+                trade.pnl_pct     = round((exit_px - trade.entry_price) / trade.entry_price * 100 * direction_mult, 4)
+                trade.exit_reason = exit_reason
                 update_signal_performance(session, trade)
                 closed_tickers.append(pos.ticker)
 

@@ -38,12 +38,13 @@ def _get_data():
                 "take_profit_price": r.take_profit_price,
                 "conviction_score": r.conviction_score,
                 "regime_at_entry": r.regime_at_entry,
-                "entry_time": r.entry_time.isoformat() if r.entry_time else None,
-                "exit_time": r.exit_time.isoformat() if r.exit_time else None,
+                "entry_time": (r.entry_time.isoformat() + "Z") if r.entry_time else None,
+                "exit_time": (r.exit_time.isoformat() + "Z") if r.exit_time else None,
                 "exit_reason": r.exit_reason,
                 "pnl": r.pnl,
                 "pnl_pct": r.pnl_pct,
                 "is_paper": r.is_paper,
+                "signals_at_entry": r.signals_at_entry or [],
             }
             for r in rows
         ]

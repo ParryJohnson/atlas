@@ -59,6 +59,13 @@ interface ConvictionSignal {
   timestamp: string | null;
 }
 
+interface TradeSignal {
+  type: string;
+  direction: string;
+  contribution: number;
+  source?: string;
+}
+
 interface Trade {
   id: number;
   ticker: string;
@@ -66,6 +73,8 @@ interface Trade {
   entry_price: number;
   exit_price: number | null;
   shares: number;
+  stop_loss_price: number | null;
+  take_profit_price: number | null;
   pnl: number | null;
   pnl_pct: number | null;
   exit_reason: string | null;
@@ -73,6 +82,7 @@ interface Trade {
   exit_time: string | null;
   conviction_score: number;
   regime_at_entry: string | null;
+  signals_at_entry?: TradeSignal[];
 }
 
 interface TradesData {
@@ -132,12 +142,45 @@ function fmtPct(n: number | null | undefined): string {
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-US", {
+  const utc = iso.endsWith("Z") ? iso : iso + "Z";
+  return new Date(utc).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  });
+    timeZone: "America/New_York",
+  }) + " ET";
+}
+
+function fmtSignalName(name: string): string {
+  return name
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bRsi\b/, "RSI")
+    .replace(/\bMacd\b/, "MACD")
+    .replace(/\bVwap\b/, "VWAP")
+    .replace(/\bIv\b/, "IV")
+    .replace(/\bAtr\b/, "ATR")
+    .replace(/\bEma\b/, "EMA");
+}
+
+function ExitBadge({ reason }: { reason: string | null }) {
+  if (!reason || reason === "open") {
+    return <span className="text-xs text-zinc-600">open</span>;
+  }
+  const map: Record<string, { label: string; cls: string }> = {
+    stop_loss:        { label: "Stop Loss",    cls: "bg-red-400/10 text-red-400 border-red-400/20" },
+    take_profit:      { label: "Take Profit",  cls: "bg-emerald-400/10 text-emerald-400 border-emerald-400/20" },
+    signal_exit:      { label: "Signal Exit",  cls: "bg-amber-400/10 text-amber-400 border-amber-400/20" },
+    closed_by_alpaca: { label: "Broker Close", cls: "bg-zinc-700/60 text-zinc-400 border-zinc-600/30" },
+    manual:           { label: "Manual",       cls: "bg-blue-400/10 text-blue-400 border-blue-400/20" },
+  };
+  const style = map[reason] ?? { label: reason.replace(/_/g, " "), cls: "bg-zinc-700/60 text-zinc-400 border-zinc-600/30" };
+  return (
+    <span className={`inline-flex rounded border px-1.5 py-0.5 text-[10px] font-medium ${style.cls}`}>
+      {style.label}
+    </span>
+  );
 }
 
 function pnlColor(v: number | null | undefined): string {
@@ -563,35 +606,36 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
-                  {positions.map((p) => (
-                    <tr key={p.id} className="hover:bg-zinc-800/30 transition-colors">
-                      <td className="py-2 pr-4 font-semibold">{p.ticker}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                            p.direction === "long"
-                              ? "bg-emerald-400/10 text-emerald-400"
-                              : "bg-red-400/10 text-red-400"
-                          }`}
-                        >
-                          {p.direction}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{fmt(p.shares, 0)}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{fmtMoney(p.entry_price)}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{fmtMoney(p.current_price)}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-zinc-500">{fmtMoney(p.stop_loss_price)}</td>
-                      <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(p.unrealized_pnl)}`}>
-                        {fmtMoney(p.unrealized_pnl)}
-                      </td>
-                      <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(p.unrealized_pct)}`}>
-                        {fmtPct(p.unrealized_pct)}
-                      </td>
-                      <td className="py-2 text-right text-xs text-zinc-500 hidden md:table-cell">
-                        {fmtDate(p.entry_time)}
-                      </td>
-                    </tr>
-                  ))}
+                  {positions.map((p) => {
+                    const liveEntry = p.entry_price ?? 0;
+                    const liveCurrent = p.current_price ?? liveEntry;
+                    const mult = p.direction === "long" ? 1 : -1;
+                    const livePnl = (liveCurrent - liveEntry) * (p.shares ?? 0) * mult;
+                    const livePct = liveEntry > 0 ? ((liveCurrent - liveEntry) / liveEntry) * 100 * mult : 0;
+                    return (
+                      <tr key={p.id} className="hover:bg-zinc-800/30 transition-colors">
+                        <td className="py-2 pr-4 font-semibold text-zinc-100">{p.ticker}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${p.direction === "long" ? "bg-emerald-400/10 text-emerald-400" : "bg-red-400/10 text-red-400"}`}>
+                            {p.direction}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-100">{fmt(p.shares, 0)}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-100">{fmtMoney(liveEntry)}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-100">{fmtMoney(liveCurrent)}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-500">{fmtMoney(p.stop_loss_price)}</td>
+                        <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(livePnl)}`}>
+                          {fmtMoney(livePnl)}
+                        </td>
+                        <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(livePct)}`}>
+                          {fmtPct(livePct)}
+                        </td>
+                        <td className="py-2 text-right text-xs text-zinc-500 hidden md:table-cell">
+                          {fmtDate(p.entry_time)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -633,49 +677,64 @@ export default function Dashboard() {
                     <th className="pb-2 text-right">Exit</th>
                     <th className="pb-2 text-right">P&L $</th>
                     <th className="pb-2 text-right">P&L %</th>
-                    <th className="pb-2 text-left hidden sm:table-cell">Exit Reason</th>
-                    <th className="pb-2 text-right hidden md:table-cell">Conviction</th>
+                    <th className="pb-2 text-left hidden sm:table-cell">Status</th>
+                    <th className="pb-2 text-left hidden md:table-cell">Why it fired</th>
                     <th className="pb-2 text-right hidden lg:table-cell">Date</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
-                  {recentTrades.map((t) => (
-                    <tr key={t.id} className="hover:bg-zinc-800/30 transition-colors">
-                      <td className="py-2 pr-4 font-semibold">{t.ticker}</td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                            t.direction === "long"
-                              ? "bg-emerald-400/10 text-emerald-400"
-                              : "bg-red-400/10 text-red-400"
-                          }`}
-                        >
-                          {t.direction}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-right tabular-nums">{fmtMoney(t.entry_price)}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-zinc-400">
-                        {t.exit_price != null ? fmtMoney(t.exit_price) : <span className="text-zinc-600">open</span>}
-                      </td>
-                      <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(t.pnl)}`}>
-                        {t.pnl != null ? fmtMoney(t.pnl) : "—"}
-                      </td>
-                      <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(t.pnl_pct)}`}>
-                        {t.pnl_pct != null ? fmtPct(t.pnl_pct) : "—"}
-                      </td>
-                      <td className="py-2 pr-4 hidden sm:table-cell">
-                        <span className="text-xs capitalize text-zinc-500">
-                          {t.exit_reason?.replace(/_/g, " ") ?? "—"}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-right hidden md:table-cell">
-                        <ConvictionBar score={t.conviction_score ?? 0} />
-                      </td>
-                      <td className="py-2 text-right text-xs text-zinc-500 hidden lg:table-cell">
-                        {fmtDate(t.entry_time)}
-                      </td>
-                    </tr>
-                  ))}
+                  {recentTrades.map((t) => {
+                    const topSignals = (t.signals_at_entry ?? [])
+                      .sort((a, b) => (b.contribution ?? 0) - (a.contribution ?? 0))
+                      .slice(0, 3);
+                    const isOpen = t.exit_price == null;
+                    return (
+                      <tr key={t.id} className="hover:bg-zinc-800/30 transition-colors">
+                        <td className="py-2 pr-4 font-semibold text-zinc-100">{t.ticker}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${t.direction === "long" ? "bg-emerald-400/10 text-emerald-400" : "bg-red-400/10 text-red-400"}`}>
+                            {t.direction}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-100">{fmtMoney(t.entry_price)}</td>
+                        <td className="py-2 pr-4 text-right tabular-nums text-zinc-300">
+                          {isOpen ? <span className="text-zinc-600">open</span> : fmtMoney(t.exit_price)}
+                        </td>
+                        <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(t.pnl)}`}>
+                          {t.pnl != null ? fmtMoney(t.pnl) : "—"}
+                        </td>
+                        <td className={`py-2 pr-4 text-right tabular-nums font-medium ${pnlColor(t.pnl_pct)}`}>
+                          {t.pnl_pct != null ? fmtPct(t.pnl_pct) : "—"}
+                        </td>
+                        <td className="py-2 pr-4 hidden sm:table-cell">
+                          <ExitBadge reason={isOpen ? "open" : t.exit_reason} />
+                        </td>
+                        <td className="py-2 pr-4 hidden md:table-cell">
+                          {topSignals.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {topSignals.map((sig, i) => (
+                                <span
+                                  key={i}
+                                  className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium border ${
+                                    sig.direction === "bullish"
+                                      ? "bg-emerald-400/10 text-emerald-400 border-emerald-400/20"
+                                      : "bg-red-400/10 text-red-400 border-red-400/20"
+                                  }`}
+                                >
+                                  {fmtSignalName(sig.type ?? "")}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-zinc-600">—</span>
+                          )}
+                        </td>
+                        <td className="py-2 text-right text-xs text-zinc-500 hidden lg:table-cell">
+                          {fmtDate(t.entry_time)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

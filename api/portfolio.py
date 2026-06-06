@@ -31,8 +31,8 @@ def _get_data():
                 "stop_loss_price": r.stop_loss_price,
                 "unrealized_pnl": r.unrealized_pnl,
                 "unrealized_pct": r.unrealized_pct,
-                "entry_time": r.entry_time.isoformat() if r.entry_time else None,
-                "last_updated": r.last_updated.isoformat() if r.last_updated else None,
+                "entry_time": (r.entry_time.isoformat() + "Z") if r.entry_time else None,
+                "last_updated": (r.last_updated.isoformat() + "Z") if r.last_updated else None,
             }
             for r in rows
         ]
